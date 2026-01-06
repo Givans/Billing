@@ -5,7 +5,7 @@ import { authenticate, authorize } from '../middleware/auth.js';
 const router = express.Router();
 
 // Get all devices
-router.get('/', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const devices = await Device.find()
       .populate('availablePackages', 'name price')
@@ -34,25 +34,50 @@ router.post('/', authenticate, authorize('admin'), async (req, res) => {
   }
 });
 
-// Update device status (from MikroTik API)
-router.post('/:id/status', authenticate, async (req, res) => {
+// Get device details with CPU/RAM stats
+router.get('/:id/status', async (req, res) => {
   try {
     const device = await Device.findById(req.params.id);
     if (!device) {
       return res.status(404).json({ error: 'Device not found' });
     }
     
-    const statusData = req.body;
-    await device.updateStatus(statusData);
+    // In a real system, you would get this from MikroTik API or monitoring system
+    // For now, we'll simulate some realistic data
+    const now = new Date();
+    const uptime = device.status === 'online' ? 
+      Math.floor((now - (device.lastSeen || now)) / 1000) : 0;
     
-    res.json(device);
+    // Simulate CPU/RAM usage (you'll need to implement real monitoring)
+    const simulatedData = {
+      cpu: device.status === 'online' ? Math.floor(Math.random() * 30) + 20 : 0,
+      ram: {
+        total: 4096, // 4GB in MB
+        used: device.status === 'online' ? Math.floor(Math.random() * 2048) + 1024 : 0,
+        percentage: device.status === 'online' ? Math.floor(Math.random() * 30) + 40 : 0
+      },
+      uptime: uptime,
+      onlineCustomers: device.stats.onlineCustomers || 0
+    };
+    
+    res.json({
+      device: {
+        _id: device._id,
+        name: device.name,
+        nasIp: device.nasIp,
+        status: device.status,
+        lastSeen: device.lastSeen,
+        stats: device.stats
+      },
+      ...simulatedData
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // Get device statistics
-router.get('/:id/stats', authenticate, async (req, res) => {
+router.get('/:id/stats', async (req, res) => {
   try {
     const device = await Device.findById(req.params.id);
     if (!device) {
@@ -120,7 +145,7 @@ router.get('/:id/stats', authenticate, async (req, res) => {
 });
 
 // Get device dashboard data
-router.get('/:id/dashboard', authenticate, async (req, res) => {
+router.get('/:id/dashboard', async (req, res) => {
   try {
     const device = await Device.findById(req.params.id);
     if (!device) {
@@ -185,5 +210,6 @@ router.get('/:id/dashboard', authenticate, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 export default router;

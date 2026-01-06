@@ -309,6 +309,136 @@ router.get('/device/:deviceId/stats', authenticate, async (req, res) => {
   }
 });
 
+
+
+
+// Get all payments
+router.get('/',  async (req, res) => {
+  try {
+    const { 
+      limit = 50, 
+      sortBy = 'createdAt', 
+      sortOrder = 'desc',
+      device,
+      customer,
+      status,
+      startDate,
+      endDate 
+    } = req.query;
+    
+    let query = {};
+    
+    if (device) {
+      query.device = device;
+    }
+    
+    if (customer) {
+      query.customer = customer;
+    }
+    
+    if (status) {
+      query.status = status;
+    }
+    
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+    
+    const sort = {};
+    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    
+    const payments = await Payment.find(query)
+      .populate('customer', 'macAddress username phoneNumber')
+      .populate('package', 'name price')
+      .populate('device', 'name nasIp')
+      .sort(sort)
+      .limit(parseInt(limit));
+    
+    // Get total for pagination
+    const total = await Payment.countDocuments(query);
+    
+    res.json({
+      payments,
+      total,
+      limit: parseInt(limit)
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get payment by ID
+router.get('/:id', authenticate, async (req, res) => {
+  try {
+    const payment = await Payment.findById(req.params.id)
+      .populate('customer')
+      .populate('package')
+      .populate('device');
+    
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+    
+    res.json(payment);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create payment
+router.post('/', authenticate, async (req, res) => {
+  try {
+    const paymentData = {
+      ...req.body,
+      createdBy: req.user._id
+    };
+    
+    const payment = new Payment(paymentData);
+    await payment.save();
+    
+    res.status(201).json(payment);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Update payment
+router.put('/:id', authenticate, checkPermission('canEditPayments'), async (req, res) => {
+  try {
+    const payment = await Payment.findById(req.params.id);
+    
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+    
+    Object.assign(payment, req.body);
+    await payment.save();
+    
+    res.json(payment);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Delete payment
+router.delete('/:id', authenticate, checkPermission('canDeletePayments'), async (req, res) => {
+  try {
+    const payment = await Payment.findById(req.params.id);
+    
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+    
+    await payment.remove();
+    res.json({ message: 'Payment deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 // **PLACEHOLDER FUNCTIONS - YOU NEED TO IMPLEMENT THESE**
 
 // M-Pesa STK Push initiation
