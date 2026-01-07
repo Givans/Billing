@@ -3,7 +3,7 @@ import Payment from '../models/Payment.js';
 import Customer from '../models/Customer.js';
 import Package from '../models/Package.js';
 import Device from '../models/Device.js';
-import { authenticate, checkPermission } from '../middleware/auth.js';
+import { authenticate, authorize } from '../middleware/auth.js';
 import crypto from 'crypto';
 
 const router = express.Router();
@@ -313,33 +313,70 @@ router.get('/device/:deviceId/stats', authenticate, async (req, res) => {
 
 
 // Get all payments
-router.get('/',  async (req, res) => {
+router.get('/', authenticate, async (req, res) => {
   try {
     const { 
-      limit = 50, 
-      sortBy = 'createdAt', 
-      sortOrder = 'desc',
-      device,
-      customer,
+      search,
       status,
+      device,
+      paymentMethod,
+      minAmount,
+      maxAmount,
       startDate,
-      endDate 
+      endDate,
+      customer,
+      package: packageId,
+      page = 1,
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
     } = req.query;
     
+    const skip = (page - 1) * limit;
     let query = {};
     
-    if (device) {
+    // Status filter
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    // Device filter
+    if (device && device !== 'all') {
       query.device = device;
     }
     
+    // Payment method filter
+    if (paymentMethod && paymentMethod !== 'all') {
+      query.paymentMethod = paymentMethod;
+    }
+    
+    // Customer filter
     if (customer) {
       query.customer = customer;
     }
     
-    if (status) {
-      query.status = status;
+    // Package filter
+    if (packageId) {
+      query.package = packageId;
     }
     
+    // Search filter
+    if (search) {
+      query.$or = [
+        { transactionId: { $regex: search, $options: 'i' } },
+        { phoneNumber: { $regex: search, $options: 'i' } },
+        { mpesaReceiptNumber: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    // Amount range filter
+    if (minAmount || maxAmount) {
+      query.amount = {};
+      if (minAmount) query.amount.$gte = parseFloat(minAmount);
+      if (maxAmount) query.amount.$lte = parseFloat(maxAmount);
+    }
+    
+    // Date range filter
     if (startDate || endDate) {
       query.createdAt = {};
       if (startDate) query.createdAt.$gte = new Date(startDate);
@@ -349,25 +386,215 @@ router.get('/',  async (req, res) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
     
+    // Fetch payments with pagination
     const payments = await Payment.find(query)
-      .populate('customer', 'macAddress username phoneNumber')
-      .populate('package', 'name price')
+      .populate('customer', 'macAddress phoneNumber')
+      .populate('package', 'name price colorCode')
       .populate('device', 'name nasIp')
+      .populate('initiatedBy', 'username')
       .sort(sort)
+      .skip(skip)
       .limit(parseInt(limit));
     
-    // Get total for pagination
     const total = await Payment.countDocuments(query);
     
+    // Get payment statistics
+    const stats = await Payment.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: '$amount' },
+          totalCount: { $sum: 1 },
+          completedAmount: {
+            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, '$amount', 0] }
+          },
+          completedCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
+          },
+          pendingCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] }
+          },
+          failedCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+          }
+        }
+      }
+    ]);
+    
+    // Get daily revenue for last 7 days
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    
+    const dailyRevenue = await Payment.aggregate([
+      {
+        $match: {
+          ...query,
+          status: 'completed',
+          createdAt: { $gte: sevenDaysAgo }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' }
+          },
+          revenue: { $sum: '$amount' },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } },
+      { $limit: 7 }
+    ]);
+    
+    // Get payment method breakdown
+    const paymentMethodBreakdown = await Payment.aggregate([
+      { $match: { ...query, status: 'completed' } },
+      {
+        $group: {
+          _id: '$paymentMethod',
+          amount: { $sum: '$amount' },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { amount: -1 } }
+    ]);
+    
+    // Get device revenue breakdown
+    const deviceRevenue = await Payment.aggregate([
+      { 
+        $match: { 
+          ...query, 
+          status: 'completed',
+          device: { $exists: true }
+        } 
+      },
+      {
+        $group: {
+          _id: '$device',
+          revenue: { $sum: '$amount' },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { revenue: -1 } },
+      { $limit: 5 }
+    ]);
+    
+    // Populate device names
+    const populatedDeviceRevenue = await Promise.all(
+      deviceRevenue.map(async (item) => {
+        const device = await Device.findById(item._id).select('name nasIp');
+        return {
+          ...item,
+          device: device || { name: 'Unknown', nasIp: '' }
+        };
+      })
+    );
+    
     res.json({
+      success: true,
       payments,
-      total,
-      limit: parseInt(limit)
+      stats: stats[0] || {
+        totalAmount: 0,
+        totalCount: 0,
+        completedAmount: 0,
+        completedCount: 0,
+        pendingCount: 0,
+        failedCount: 0
+      },
+      breakdowns: {
+        dailyRevenue,
+        paymentMethod: paymentMethodBreakdown,
+        deviceRevenue: populatedDeviceRevenue
+      },
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Error fetching payments:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
   }
 });
+
+// Export payments data
+router.get('/export', authenticate, async (req, res) => {
+  try {
+    const { startDate, endDate, format = 'json' } = req.query;
+    
+    let query = { status: 'completed' };
+    
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+    
+    const payments = await Payment.find(query)
+      .populate('customer', 'macAddress phoneNumber')
+      .populate('package', 'name price')
+      .populate('device', 'name nasIp')
+      .sort({ createdAt: -1 });
+    
+    if (format === 'csv') {
+      // Convert to CSV
+      const csvData = payments.map(payment => ({
+        'Transaction ID': payment.transactionId || '',
+        'Date': payment.createdAt.toISOString(),
+        'Customer MAC': payment.customer?.macAddress || '',
+        'Customer Phone': payment.customer?.phoneNumber || '',
+        'Package': payment.package?.name || '',
+        'Amount': payment.amount,
+        'Payment Method': payment.paymentMethod,
+        'Status': payment.status,
+        'Device': payment.device?.name || '',
+        'M-Pesa Receipt': payment.mpesaReceiptNumber || ''
+      }));
+      
+      // Convert to CSV string
+      const csv = convertToCSV(csvData);
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=payments.csv');
+      res.send(csv);
+    } else {
+      res.json({
+        success: true,
+        payments
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// Helper function to convert to CSV
+function convertToCSV(data) {
+  const headers = Object.keys(data[0] || {});
+  const csvRows = [
+    headers.join(','),
+    ...data.map(row => 
+      headers.map(header => {
+        const value = row[header];
+        return typeof value === 'string' && value.includes(',') 
+          ? `"${value}"` 
+          : value;
+      }).join(',')
+    )
+  ];
+  return csvRows.join('\n');
+}
 
 // Get payment by ID
 router.get('/:id', authenticate, async (req, res) => {
@@ -405,7 +632,7 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // Update payment
-router.put('/:id', authenticate, checkPermission('canEditPayments'), async (req, res) => {
+router.put('/:id', authenticate,   authorize('payments', 'edit'), async (req, res) => {
   try {
     const payment = await Payment.findById(req.params.id);
     
@@ -423,7 +650,7 @@ router.put('/:id', authenticate, checkPermission('canEditPayments'), async (req,
 });
 
 // Delete payment
-router.delete('/:id', authenticate, checkPermission('canDeletePayments'), async (req, res) => {
+router.delete('/:id', authenticate,   authorize('payments', 'delete'), async (req, res) => {
   try {
     const payment = await Payment.findById(req.params.id);
     

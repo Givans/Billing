@@ -1,7 +1,7 @@
 import express from 'express';
 import Customer from '../models/Customer.js';
 import Payment from '../models/Payment.js';
-import { authenticate, checkPermission } from '../middleware/auth.js';
+import { authenticate, authorize } from '../middleware/auth.js';
 import crypto from 'crypto';
 
 const router = express.Router();
@@ -164,7 +164,7 @@ router.get('/', async (req, res) => {
 });
 
 // Add this endpoint for quick actions
-router.post('/:id/actions', authenticate, checkPermission('canEditCustomers'), async (req, res) => {
+router.post('/:id/actions', authenticate,   authorize('customers', 'edit'), async (req, res) => {
   try {
     const { action } = req.body;
     const customer = await Customer.findById(req.params.id);
@@ -345,7 +345,7 @@ router.get('/check-phone/:phoneNumber', authenticate, async (req, res) => {
 });
 
 // Create customer from phone number
-router.post('/', authenticate, checkPermission('canEditCustomers'), async (req, res) => {
+router.post('/', authenticate,   authorize('customers', 'edit'), async (req, res) => {
   try {
     const { phoneNumber, device, package: packageId, macAddress } = req.body;
     
@@ -477,7 +477,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // Update customer
-router.put('/:id', authenticate, checkPermission('canEditCustomers'), async (req, res) => {
+router.put('/:id', authenticate,   authorize('customers', 'edit'), async (req, res) => {
   try {
     const customer = await Customer.findById(req.params.id);
     

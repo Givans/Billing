@@ -13,12 +13,18 @@ import LineChart from "./pages/Charts/LineChart";
 import BarChart from "./pages/Charts/BarChart";
 import Calendar from "./pages/Calendar";
 import Customers from "./pages/Customers/Customers";
-import CustomerDetail from "./pages/Customers/CustomerDetail"; // Add this import
+import CustomerDetail from "./pages/Customers/CustomerDetail";
 import FormElements from "./pages/Forms/FormElements";
 import Blank from "./pages/Blank";
 import AppLayout from "./layout/AppLayout";
 import { ScrollToTop } from "./components/common/ScrollToTop";
 import Home from "./pages/Dashboard/Home";
+import Packages from "./pages/Packages/Packages";
+import Accounts from "./pages/Accounts/AccountsPage";
+import Devices from "./pages/Devices/DevicesPage";
+import DeviceDetails from "./pages/Devices/DeviceDetails";
+import Users from "./pages/Users/UsersPage";
+import UserDetails from "./pages/Users/UserDetails";
 
 export default function App() {
   return (
@@ -38,9 +44,19 @@ export default function App() {
             {/* Forms */}
             <Route path="/form-elements" element={<FormElements />} />
 
-            {/* Tables */}
+            {/* clients */}
             <Route path="/clients" element={<Customers />} />
             <Route path="/clients/:id" element={<CustomerDetail />} />
+
+            <Route path="/staff" element={<Users />} />
+            <Route path="/staff/:id" element={<UserDetails />} />
+
+
+            <Route path="/plans" element={<Packages />} />
+            <Route path="/accounts" element={<Accounts />} />
+            <Route path="/routers" element={<Devices />} />
+            <Route path="/routers/:id" element={<DeviceDetails />} />
+
             {/* Ui Elements */}
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/avatars" element={<Avatars />} />

@@ -4,24 +4,72 @@ import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Get all packages
+// Get all packages with filters and pagination
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { type, isActive } = req.query;
+    const { 
+      type, 
+      isActive,
+      search,
+      minPrice,
+      maxPrice,
+      durationUnit,
+      device,
+      page = 1,
+      limit = 20,
+      sortBy = 'price',
+      sortOrder = 'asc'
+    } = req.query;
     
+    const skip = (page - 1) * limit;
     let query = {};
     
-    if (type) {
+    // Type filter
+    if (type && type !== 'all') {
       query.type = type;
     }
     
+    // Active status filter
     if (isActive !== undefined) {
       query.isActive = isActive === 'true';
     }
     
+    // Search filter
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    // Price range filter
+    if (minPrice || maxPrice) {
+      query.price = {};
+      if (minPrice) query.price.$gte = parseFloat(minPrice);
+      if (maxPrice) query.price.$lte = parseFloat(maxPrice);
+    }
+    
+    // Duration unit filter
+    if (durationUnit && durationUnit !== 'all') {
+      query['duration.unit'] = durationUnit;
+    }
+    
+    // Device filter (you might need to join with devices collection)
+    if (device && device !== 'all') {
+      // This assumes packages are associated with devices
+      // You might need to adjust based on your schema
+      query.device = device;
+    }
+    
+    const sort = {};
+    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    
+    // Fetch packages with pagination
     const packages = await Package.find(query)
       .populate('createdBy', 'username')
-      .sort({ price: 1 });
+      .sort(sort)
+      .skip(skip)
+      .limit(parseInt(limit));
     
     // Add virtuals to response
     const packagesWithVirtuals = packages.map(pkg => ({
@@ -29,12 +77,109 @@ router.get('/', authenticate, async (req, res) => {
       durationInMinutes: pkg.durationInMinutes,
       durationInMs: pkg.durationInMs,
       formattedDuration: pkg.getFormattedDuration(),
-      hasBurst: pkg.hasBurst()
+      hasBurst: pkg.hasBurst(),
+      // Add customer count for analytics
+      customerCount: 0 // We'll populate this later
     }));
     
-    res.json(packagesWithVirtuals);
+    const total = await Package.countDocuments(query);
+    
+    // Get package usage statistics
+    const Customer = (await import('../models/Customer.js')).default;
+    const packageStats = await Customer.aggregate([
+      {
+        $group: {
+          _id: '$currentPackage.package',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    // Map customer counts to packages
+    const packagesWithStats = packagesWithVirtuals.map(pkg => {
+      const stat = packageStats.find(s => s._id && s._id.toString() === pkg._id.toString());
+      return {
+        ...pkg,
+        customerCount: stat ? stat.count : 0
+      };
+    });
+    
+    res.json({
+      success: true,
+      packages: packagesWithStats,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// Get package analytics
+router.get('/analytics/stats', authenticate, async (req, res) => {
+  try {
+    const Customer = (await import('../models/Customer.js')).default;
+    
+    // Get package usage statistics
+    const packageStats = await Customer.aggregate([
+      {
+        $group: {
+          _id: '$currentPackage.package',
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { count: -1 } },
+      {
+        $lookup: {
+          from: 'packages',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'package'
+        }
+      },
+      { $unwind: { path: '$package', preserveNullAndEmptyArrays: true } }
+    ]);
+    
+    // Get total packages and active packages
+    const totalPackages = await Package.countDocuments();
+    const activePackages = await Package.countDocuments({ isActive: true });
+    
+    // Calculate revenue per package (simplified)
+    const revenueStats = await Promise.all(
+      packageStats.slice(0, 5).map(async (stat) => {
+        const packageDoc = stat.package;
+        const totalRevenue = (packageDoc.price || 0) * stat.count;
+        return {
+          packageId: packageDoc._id,
+          packageName: packageDoc.name,
+          customerCount: stat.count,
+          totalRevenue
+        };
+      })
+    );
+    
+    res.json({
+      success: true,
+      stats: {
+        totalPackages,
+        activePackages,
+        topPackages: packageStats.slice(0, 5),
+        leastUsedPackages: packageStats.slice(-5),
+        revenueStats
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
   }
 });
 
